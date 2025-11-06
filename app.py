@@ -18,7 +18,7 @@ from typing import Dict, Tuple, Optional
 from flask import Flask, request, render_template, send_file, jsonify
 from PIL import Image
 
-# Import the drop-in face recognition implementation (must provide add_labels_to_image)
+# Import face recognition implementation
 from face_recognition import add_labels_to_image
 
 # -------------------------
