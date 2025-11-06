@@ -98,7 +98,6 @@ def locate_faces(image: Image.Image) -> List[Tuple[List[float], float, Tensor]]:
     """
     # facenet-pytorch MTCNN returns cropped tensors and probabilities when used like below
     # we call it twice to get boxes + crops + probabilities in a robust way
-    # The implementation intentionally collects results differently than the original.
     crops, probs = _detector(image, return_prob=True)
     boxes, _ = _detector.detect(image)
 
@@ -180,7 +179,7 @@ def add_labels_to_image(image: Image.Image) -> matplotlib.figure.Figure:
     """
     Runs detection + recognition, draws boxes & labels onto a matplotlib Figure, and returns it.
     """
-    # Prepare figure sized to image pixels (keeps resolution similar to original)
+    # Prepare figure sized to image pixels
     img_w, img_h = image.size
     DPI = 96
     fig = plt.figure(figsize=(img_w / DPI, img_h / DPI), dpi=DPI)
