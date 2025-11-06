@@ -214,9 +214,6 @@ The project code and framework are licensed under the **Creative Commons Attribu
 To view a copy of this license, visit:
 [http://creativecommons.org/licenses/by-nc-nd/4.0/](http://creativecommons.org/licenses/by-nc-nd/4.0/)
 
-This project builds upon concepts and base ideas from the WorldQuant University AI Lab (Deep Learning for Computer Vision).
-The face recognition model logic references the original implementation (face_recognition.py and app.py) with significant modification by Destiny Otto, © 2024 WorldQuant University, used here for educational purposes under CC BY-NC-ND 4.0.
-
 
 ---
 

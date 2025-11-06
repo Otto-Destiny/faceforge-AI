@@ -1,181 +1,220 @@
-# By Destiny Otto.
+"""
+Flask web application for facial recognition image processing.
+Routes provided:
+- GET  /            -> serves upload.html via templates
+- POST /recognize   -> accept form/file upload named "image", returns annotated JPEG
+- POST /validate    -> quick validation endpoint (returns JSON)
+- GET  /health      -> service health JSON
+Error handlers for 413, 404, 500 are included.
+
+Dependencies: Flask, Pillow (PIL), matplotlib, io, datetime
+It imports add_labels_to_image from face_recognition (keeps same contract).
+"""
 
 import io
-import os
-from datetime import datetime
-from werkzeug.utils import secure_filename
+from datetime import datetime, timezone
+from typing import Dict, Tuple, Optional
 
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, request, render_template, send_file, jsonify
 from PIL import Image
 
-# Import our face recognition code
+# Import the drop-in face recognition implementation (must provide add_labels_to_image)
 from face_recognition import add_labels_to_image
 
-# Starts Flask
+# -------------------------
+# Application configuration
+# -------------------------
+SERVICE_NAME = "facial-recognition"
+MAX_BYTES = 16 * 1024 * 1024  # 16 MB
+ALLOWED_SUFFIXES = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
+
 app = Flask(__name__)
 
-# Configuration for file uploads
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'}
-
-# Create uploads directory if it doesn't exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# Apply upload size limit
+app.config["MAX_CONTENT_LENGTH"] = MAX_BYTES
 
 
-def allowed_file(filename):
-    """Check if file extension is allowed"""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+# -------------------------
+# Helper utilities
+# -------------------------
+def _extension_ok(filename: str) -> bool:
+    """Return True when filename has an allowed extension."""
+    if not filename or "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[1].lower()
+    return ext in ALLOWED_SUFFIXES
 
 
-def get_image_info(image):
-    """Extract metadata from image"""
+def _is_image_mime(mimetype: Optional[str]) -> bool:
+    """Simple check that the upload surface-level mime type looks like an image."""
+    if not mimetype:
+        return False
+    return mimetype.split("/")[0].lower() == "image"
+
+
+def _extract_image_meta(img: Image.Image) -> Dict:
+    """Collect basic metadata about a PIL image (keeps different key names)."""
     try:
-        info = {
-            'format': image.format,
-            'mode': image.mode,
-            'size': image.size,
-            'width': image.width,
-            'height': image.height
+        return {
+            "format": img.format,
+            "mode": img.mode,
+            "dimensions": {"width": img.width, "height": img.height},
+            "size": img.size,
         }
-        return info
-    except Exception as e:
-        return None
+    except Exception:
+        return {}
 
 
-# Set the route to "/"
-@app.route('/')
-def home():
+def _figure_to_bytes(fig, fmt: str = "jpeg") -> io.BytesIO:
+    """
+    Convert a Matplotlib figure to an in-memory bytes buffer.
+    Closes the figure afterwards to avoid memory accumulation.
+    """
+    buf = io.BytesIO()
+    # use JPEG format for browser compatibility
+    fig.savefig(buf, format=fmt, bbox_inches="tight")
+    buf.seek(0)
+    try:
+        # close the figure to free resources
+        import matplotlib.pyplot as _plt
+
+        _plt.close(fig)
+    except Exception:
+        pass
+    return buf
+
+
+# -------------------------
+# Routes
+# -------------------------
+@app.route("/", methods=["GET"])
+def index():
+    """Render the upload page (templates/upload.html expected)."""
     return render_template("upload.html")
 
 
 @app.route("/recognize", methods=["POST"])
-def process_image():
-    # Display an error message if no image found
+def recognize():
+    """
+    Main image processing endpoint.
+    Expects form-file under key "image".
+    Returns the annotated image as image/jpeg.
+    """
     if "image" not in request.files:
         return "No image provided", 400
 
-    # Get the file sent along with the request
-    file = request.files["image"]
+    upload = request.files["image"]
 
-    # Check if file was actually selected
-    if file.filename == '':
+    if not upload or upload.filename == "":
         return "No file selected", 400
 
-    # Validate file extension
-    if not allowed_file(file.filename):
+    # Basic extension check
+    if not _extension_ok(upload.filename):
         return "File type not allowed. Please upload an image file.", 400
 
-    # Video also shows up as an image
-    # we want to reject those as well
-    if not file.mimetype.startswith("image/"):
+    # Basic mimetype check
+    if not _is_image_mime(upload.mimetype):
         return "Image format not recognized", 400
 
     try:
-        image_data = file.stream
+        # Open the uploaded stream with PIL (this will validate the image)
+        pil_img = Image.open(upload.stream).convert("RGB")
 
-        # Run our face recognition code!
-        img_out = run_face_recognition(image_data)
+        # Run the face recognition/annotation pipeline (from face_recognition)
+        annotated_fig = add_labels_to_image(pil_img)
 
-        if img_out == Ellipsis:
-            return "Image processing not enabled", 200
-        else:
-            # Our function returns something from matplotlib,
-            # convert it to a web-friendly form and return it
-            out_stream = matplotlib_to_bytes(img_out)
-            
-            # Add headers for better file handling
-            response = send_file(
-                out_stream, 
-                mimetype="image/jpeg",
-                as_attachment=False,
-                download_name=f"recognized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-            )
-            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            response.headers['Pragma'] = 'no-cache'
-            response.headers['Expires'] = '0'
-            return response
+        # Convert Matplotlib figure to bytes and send as response
+        img_buffer = _figure_to_bytes(annotated_fig, fmt="jpeg")
 
-    except Exception as e:
-        # Log the error for debugging
-        print(f"Error processing image: {str(e)}")
-        return f"Error processing image: {str(e)}", 500
+        # Create response using Flask's send_file
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"recognized_{timestamp}.jpg"
 
+        resp = send_file(
+            img_buffer,
+            mimetype="image/jpeg",
+            as_attachment=False,
+            download_name=filename,
+        )
 
-def run_face_recognition(image_data):
-    # Open image_data with PIL
-    input_image = Image.open(image_data)
+        # Recommended cache headers for dynamic images
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
 
-    # Run our function on the PIL image
-    img_out = add_labels_to_image(input_image)
+        return resp
 
-    return img_out
+    except Exception as exc:
+        # Print server-side error for diagnostics (stdout or host logs)
+        print(f"[ERROR] processing upload: {exc}")
+        return f"Error processing image: {str(exc)}", 500
 
 
-def matplotlib_to_bytes(figure):
-    buffer = io.BytesIO()
-    figure.savefig(buffer, format="jpg", bbox_inches="tight")
-    buffer.seek(0)
-    return buffer
-
-
-# Additional API endpoint for image validation (optional, for future enhancements)
 @app.route("/validate", methods=["POST"])
-def validate_image():
-    """Validate image before processing - useful for client-side checks"""
+def validate():
+    """
+    Lightweight validation endpoint.
+    Returns JSON describing whether the provided file looks like a valid image.
+    """
     if "image" not in request.files:
         return jsonify({"valid": False, "error": "No image provided"}), 400
-    
-    file = request.files["image"]
-    
-    if file.filename == '':
+
+    f = request.files["image"]
+
+    if not f or f.filename == "":
         return jsonify({"valid": False, "error": "No file selected"}), 400
-    
-    if not allowed_file(file.filename):
+
+    if not _extension_ok(f.filename):
         return jsonify({"valid": False, "error": "File type not allowed"}), 400
-    
+
     try:
-        img = Image.open(file.stream)
-        info = get_image_info(img)
-        
-        return jsonify({
-            "valid": True,
-            "info": info
-        }), 200
+        img = Image.open(f.stream)
+        meta = _extract_image_meta(img)
+        return jsonify({"valid": True, "info": meta}), 200
     except Exception as e:
         return jsonify({"valid": False, "error": str(e)}), 400
 
 
-# Health check endpoint
-@app.route("/health")
-def health_check():
-    """Simple health check endpoint"""
-    return jsonify({
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "service": "facial-recognition"
-    }), 200
+@app.route("/health", methods=["GET"])
+def health():
+    """Simple health check for orchestration or uptime checks."""
+    return (
+        jsonify(
+            {
+                "service": SERVICE_NAME,
+                "status": "healthy",
+                "time": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        200,
+    )
 
 
-# Error handlers for better user experience
+# -------------------------
+# Error handlers
+# -------------------------
 @app.errorhandler(413)
-def request_entity_too_large(error):
-    """Handle file size exceeded error"""
+def handle_too_large(_err):
     return "File too large. Maximum size is 16MB.", 413
 
 
-@app.errorhandler(500)
-def internal_server_error(error):
-    """Handle internal server errors"""
-    return "Internal server error. Please try again later.", 500
-
-
 @app.errorhandler(404)
-def not_found(error):
-    """Handle 404 errors"""
+def handle_not_found(_err):
     return "Page not found", 404
 
 
+@app.errorhandler(500)
+def handle_server_error(_err):
+    return "Internal server error. Please try again later.", 500
+
+
+# -------------------------
+# Run the app (development)
+# -------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Note: in production use a WSGI server (gunicorn/uwsgi).
+    app.run(host="127.0.0.1", port=5000, debug=True)
+
+'''
+© 2025 Destiny Otto
+'''
