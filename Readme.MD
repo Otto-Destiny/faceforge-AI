@@ -150,7 +150,7 @@ Follow these instructions to get a copy of the project up and running on your lo
 **Clone the repository:**
 
 ```bash
-git clone https://github.com/your-username/FaceForgeAI.git
+git clone https://github.com/Otto-Destiny/faceforge-AI.git
 cd FaceForgeAI
 ```
 
